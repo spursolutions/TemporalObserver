@@ -1,0 +1,41 @@
+services:
+  temporalobserver-postgresql:
+    container_name: temporalobserver-postgresql
+    image: postgres:${POSTGRESQL_VERSION:-16}
+    environment:
+      POSTGRES_USER: observer
+      POSTGRES_PASSWORD: observer
+      POSTGRES_DB: temporalobserver
+    networks:
+      - temporal-network
+    expose:
+      - 5432
+    volumes:
+      - temporalobserver-pgdata:/var/lib/postgresql/data
+
+  temporalobserver:
+    container_name: temporalobserver
+    depends_on:
+      - temporalobserver-postgresql
+    environment:
+      - TEMPORAL_HOST_PORT=temporal:7233
+      - OBSERVER_NAMESPACES=bytelink,nexsys,walle
+      - DATABASE_URL=postgres://observer:observer@temporalobserver-postgresql:5432/temporalobserver
+      - OBSERVER_POLL_INTERVAL_SECONDS=30
+      - OBSERVER_OPEN_LOOKBACK_DAYS=30
+    image: ${DOCKER_REGISTRY-}temporalobserver
+    networks:
+      - temporal-network
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 8087:8080
+
+networks:
+  temporal-network:
+    external: true
+    name: temporal-network
+
+volumes:
+  temporalobserver-pgdata:
