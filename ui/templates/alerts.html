@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Alerts - TemporalObserver</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f6f7f9; color: #1a1d23; }
+  nav { background: #1a1d23; padding: 12px 24px; display: flex; gap: 20px; align-items: center; }
+  nav a { color: #d7dae0; text-decoration: none; font-size: 14px; }
+  nav a:hover { color: #fff; }
+  nav .brand { color: #fff; font-weight: 600; margin-right: 12px; }
+  main { padding: 24px; max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #6b7280; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.06); margin-bottom: 12px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .pill.critical { background: #fde2e1; color: #b91c1c; }
+  .pill.warning { background: #fef3c7; color: #92400e; }
+  a.link { color: #2563eb; text-decoration: none; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="brand">TemporalObserver</span>
+  <a href="/ui/overview">Overview</a>
+  <a href="/ui/search">Search</a>
+  <a href="/ui/alerts">Alerts</a>
+</nav>
+<main>
+  <h1>Active alerts{{if .Namespace}} &middot; {{.Namespace}}{{end}}</h1>
+  <div class="sub">Stuck/slow workflows and activities, repeated retries, and elevated failure rates - evaluated against per-type baselines, not a single global average.</div>
+
+  {{range .Alerts}}
+  <div class="card">
+    <span class="pill {{.Severity}}">{{.Severity}}</span>
+    <strong>{{.AlertType}}</strong>
+    &middot; {{.Namespace}} / {{.WorkflowType}}{{if .ActivityType}} / {{.ActivityType}}{{end}}
+    {{if .RunID}}&middot; <a class="link" href="/ui/workflow/{{.Namespace}}/{{.WorkflowID}}/{{.RunID}}">{{.WorkflowID}}</a>{{end}}
+    <div style="font-size:13px;color:#4b5563;margin-top:4px;">{{.Message}}</div>
+    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">raised {{.CreatedAt}}</div>
+  </div>
+  {{else}}
+  <div style="color:#6b7280;">No active alerts.</div>
+  {{end}}
+</main>
+</body>
+</html>

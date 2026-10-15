@@ -37,6 +37,44 @@ type ActivityExecution struct {
 	FailureMessage string     `json:"failure_message,omitempty"`
 }
 
+// DurationBaseline is a rolling p50/p95 duration computed from historical data, scoped to a
+// workflow type (ActivityType == "") or to one activity type within it.
+type DurationBaseline struct {
+	Namespace    string    `json:"namespace"`
+	WorkflowType string    `json:"workflow_type"`
+	ActivityType string    `json:"activity_type,omitempty"`
+	SampleCount  int64     `json:"sample_count"`
+	P50Ms        *int64    `json:"p50_ms,omitempty"`
+	P95Ms        *int64    `json:"p95_ms,omitempty"`
+	ComputedAt   time.Time `json:"computed_at"`
+}
+
+// Threshold is an optional operator override. A nil field falls back to the computed baseline.
+type Threshold struct {
+	Namespace          string   `json:"namespace"`
+	WorkflowType       string   `json:"workflow_type"`
+	ActivityType       string   `json:"activity_type,omitempty"`
+	MaxDurationMs      *int64   `json:"max_duration_ms,omitempty"`
+	BaselineMultiplier *float64 `json:"baseline_multiplier,omitempty"`
+}
+
+// Alert is a single flagged condition - a stuck/slow workflow or activity, a repeated-retry
+// activity, or an elevated failure rate for a workflow type.
+type Alert struct {
+	ID           int64      `json:"id"`
+	Namespace    string     `json:"namespace"`
+	WorkflowID   string     `json:"workflow_id"`
+	RunID        string     `json:"run_id"`
+	WorkflowType string     `json:"workflow_type"`
+	ActivityType string     `json:"activity_type,omitempty"`
+	ActivityID   string     `json:"activity_id,omitempty"`
+	AlertType    string     `json:"alert_type"`
+	Severity     string     `json:"severity"`
+	Message      string     `json:"message"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
+}
+
 // NamespaceOverview aggregates workflow_executions by namespace + workflow type for the
 // Overview/Namespace dashboard views.
 type NamespaceOverview struct {

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{.Workflow.WorkflowID}} - TemporalObserver</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f6f7f9; color: #1a1d23; }
+  nav { background: #1a1d23; padding: 12px 24px; display: flex; gap: 20px; align-items: center; }
+  nav a { color: #d7dae0; text-decoration: none; font-size: 14px; }
+  nav a:hover { color: #fff; }
+  nav .brand { color: #fff; font-weight: 600; margin-right: 12px; }
+  main { padding: 24px; max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; word-break: break-all; }
+  .sub { color: #6b7280; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.06); margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; }
+  th { color: #6b7280; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .pill.Failed, .pill.TimedOut, .pill.Terminated, .pill.Canceled { background: #fde2e1; color: #b91c1c; }
+  .pill.Completed { background: #dcfce7; color: #166534; }
+  .pill.Running, .pill.Scheduled, .pill.Started { background: #dbeafe; color: #1e40af; }
+  a.link { color: #2563eb; text-decoration: none; }
+  a.link:hover { text-decoration: underline; }
+  .kv { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; font-size: 13px; }
+  .kv div.k { color: #6b7280; }
+  .fieldrow { font-size: 13px; margin-bottom: 4px; }
+  .rawgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .rawlabel { font-size: 12px; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 6px; }
+  .rawblock { background: #f6f7f9; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; font-size: 12px; font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow: auto; margin: 0 0 10px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="brand">TemporalObserver</span>
+  <a href="/ui/overview">Overview</a>
+  <a href="/ui/search">Search</a>
+  <a href="/ui/alerts">Alerts</a>
+</nav>
+<main>
+  <h1>{{.Workflow.WorkflowType}}</h1>
+  <div class="sub">{{.Workflow.WorkflowID}} / {{.Workflow.RunID}} &middot; <a class="link" href="{{.TemporalLink}}" target="_blank">open in temporal-ui &#8599;</a></div>
+
+  <div class="card">
+    <div class="kv">
+      <div class="k">Namespace</div><div>{{.Workflow.Namespace}}</div>
+      <div class="k">Status</div><div><span class="pill {{.Workflow.Status}}">{{.Workflow.Status}}</span></div>
+      <div class="k">Task queue</div><div>{{.Workflow.TaskQueue}}</div>
+      <div class="k">Start time</div><div>{{.Workflow.StartTime}}</div>
+      <div class="k">Close time</div><div>{{if .Workflow.CloseTime}}{{.Workflow.CloseTime}}{{else}}-{{end}}</div>
+      <div class="k">Duration</div><div>{{fmtMs .Workflow.DurationMs}}</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Searchable input fields</h3>
+    {{if .SearchFields}}
+      {{range $k, $v := .SearchFields}}
+      <div class="fieldrow"><strong>{{$k}}</strong>: {{$v}}</div>
+      {{end}}
+    {{else}}
+      <div style="color:#6b7280;">No allowlisted fields found for this workflow type.</div>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <h3>Input / Result</h3>
+    <div class="sub" style="margin-bottom:8px;">Fetched live from Temporal for this page view only - never stored or indexed by TemporalObserver. Same data as "open in temporal-ui", shown inline.</div>
+    <div class="rawgrid">
+      <div>
+        <div class="rawlabel">Input</div>
+        {{range .RawInput}}<pre class="rawblock">{{.}}</pre>{{else}}<div style="color:#6b7280;font-size:13px;">Unavailable (Temporal unreachable or history pruned).</div>{{end}}
+      </div>
+      <div>
+        <div class="rawlabel">Result</div>
+        {{range .RawResult}}<pre class="rawblock">{{.}}</pre>{{else}}<div style="color:#6b7280;font-size:13px;">Unavailable, or workflow still running.</div>{{end}}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Activities</h3>
+    <table>
+      <tr><th>Type</th><th>Attempt</th><th>Status</th><th>Duration</th><th>Failure</th></tr>
+      {{range .Activities}}
+      <tr>
+        <td>{{.ActivityType}}</td>
+        <td>{{.Attempt}}</td>
+        <td><span class="pill {{.Status}}">{{.Status}}</span></td>
+        <td>{{fmtMs .DurationMs}}</td>
+        <td>{{if .FailureType}}<strong>{{.FailureType}}</strong>: {{.FailureMessage}}{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="5">No activity history collected yet (history is pulled once, after the workflow closes).</td></tr>
+      {{end}}
+    </table>
+  </div>
+</main>
+</body>
+</html>

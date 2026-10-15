@@ -6,8 +6,6 @@ services:
       POSTGRES_USER: observer
       POSTGRES_PASSWORD: observer
       POSTGRES_DB: temporalobserver
-    networks:
-      - temporal-network
     expose:
       - 5432
     volumes:
@@ -18,24 +16,31 @@ services:
     depends_on:
       - temporalobserver-postgresql
     environment:
-      - TEMPORAL_HOST_PORT=temporal:7233
+      # host.docker.internal reaches the Windows host from inside the container - this is where
+      # `kubectl port-forward svc/temporalprod-frontend -n default 7233:7233` (run on the host,
+      # in your own terminal) lands. Not "temporal:7233" - there's no local Temporal container
+      # here, we're talking to the real AKS-hosted Temporal through that tunnel.
+      - TEMPORAL_HOST_PORT=host.docker.internal:7233
+      # Nothing here is hardcoded in the app itself - this list is entirely your choice.
+      # This is the only allowlist of namespaces TemporalObserver will ever discover, poll, or
+      # store data for (re-checked every OBSERVER_NAMESPACE_DISCOVERY_INTERVAL_SECONDS, default
+      # 300s, so a new namespace of your own is picked up automatically without a restart - but
+      # only if its name is in this list). Required: this AKS cluster also hosts other teams'
+      # namespaces, so the app now refuses to start if this is left unset/empty rather than
+      # silently watching (and storing data from) every namespace on the cluster. To explicitly
+      # opt into cluster-wide monitoring instead, set this to "*" - never leave it blank.
       - OBSERVER_NAMESPACES=bytelink,nexsys,walle
       - DATABASE_URL=postgres://observer:observer@temporalobserver-postgresql:5432/temporalobserver
       - OBSERVER_POLL_INTERVAL_SECONDS=30
       - OBSERVER_OPEN_LOOKBACK_DAYS=30
     image: ${DOCKER_REGISTRY-}temporalobserver
-    networks:
-      - temporal-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - 8087:8080
-
-networks:
-  temporal-network:
-    external: true
-    name: temporal-network
 
 volumes:
   temporalobserver-pgdata:

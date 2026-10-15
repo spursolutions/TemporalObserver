@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Search - TemporalObserver</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f6f7f9; color: #1a1d23; }
+  nav { background: #1a1d23; padding: 12px 24px; display: flex; gap: 20px; align-items: center; }
+  nav a { color: #d7dae0; text-decoration: none; font-size: 14px; }
+  nav a:hover { color: #fff; }
+  nav .brand { color: #fff; font-weight: 600; margin-right: 12px; }
+  main { padding: 24px; max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #6b7280; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.06); margin-bottom: 20px; }
+  form.filters { display: grid; grid-template-columns: repeat(4, 1fr) auto; gap: 10px; align-items: end; }
+  label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+  input, select { width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; box-sizing: border-box; }
+  button { padding: 7px 16px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button.secondary { background: #e5e7eb; color: #1a1d23; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; }
+  th { color: #6b7280; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .pill.Failed, .pill.TimedOut, .pill.Terminated { background: #fde2e1; color: #b91c1c; }
+  .pill.Completed { background: #dcfce7; color: #166534; }
+  .pill.Running { background: #dbeafe; color: #1e40af; }
+  a.link { color: #2563eb; text-decoration: none; }
+  .addfield { display: flex; gap: 8px; align-items: end; margin-top: 12px; }
+  .addfield input { width: 220px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="brand">TemporalObserver</span>
+  <a href="/ui/overview">Overview</a>
+  <a href="/ui/search">Search</a>
+  <a href="/ui/alerts">Alerts</a>
+</nav>
+<main>
+  <h1>Search</h1>
+  <div class="sub">Search by value across allowlisted input fields - leave Field on "(any)" to match any allowlisted field for that namespace/workflow type, or pick one specific field. Only fields explicitly added below are ever extracted from workflow input - not the raw payload - so a value can only ever be found here if it lives in a field someone already allowlisted.</div>
+
+  <div class="card">
+    <form class="filters" method="get" action="/ui/search" id="searchForm">
+      <div>
+        <label>Namespace</label>
+        <select name="namespace" id="namespaceSelect"></select>
+      </div>
+      <div>
+        <label>Workflow type</label>
+        <select name="workflow_type" id="workflowTypeSelect"><option value="">(any)</option></select>
+      </div>
+      <div>
+        <label>Field</label>
+        <select name="field" id="fieldSelect"><option value="">(any)</option></select>
+      </div>
+      <div>
+        <label>Value</label>
+        <input name="value" id="valueInput" value="{{.Value}}" placeholder="search value">
+      </div>
+      <button type="submit">Search</button>
+    </form>
+
+    <div class="addfield">
+      <div>
+        <label>Add a new searchable field for this namespace / workflow type</label>
+        <input id="newFieldInput" placeholder="e.g. propertyAppraisedValue, or $arg0 for a whole bare-string input">
+      </div>
+      <button type="button" class="secondary" id="addFieldBtn">Add field</button>
+      <span id="addFieldStatus" style="font-size:12px;color:#6b7280;"></span>
+    </div>
+    <div class="sub" style="margin-top:8px;">For workflows whose input isn't a JSON object with named fields (e.g. a plain file path string), add <code>$arg0</code> (or <code>$arg1</code> for the second argument, etc.) to capture that whole argument as one searchable field.</div>
+  </div>
+
+  {{if .HasQuery}}
+  <div class="card">
+    <h3>Results{{if .Total}} ({{.Total}}){{end}}</h3>
+    <table>
+      <tr><th>Workflow</th><th>Namespace</th><th>Type</th><th>Status</th><th>Start time</th><th>Duration</th></tr>
+      {{range .Results}}
+      <tr>
+        <td><a class="link" href="/ui/workflow/{{.Namespace}}/{{.WorkflowID}}/{{.RunID}}">{{.WorkflowID}}</a></td>
+        <td>{{.Namespace}}</td>
+        <td>{{.WorkflowType}}</td>
+        <td><span class="pill {{.Status}}">{{.Status}}</span></td>
+        <td>{{.StartTime}}</td>
+        <td>{{fmtMs .DurationMs}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6">No matches.</td></tr>
+      {{end}}
+    </table>
+    {{if .Total}}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:12px;color:#6b7280;">
+      <span>showing {{.PageStart}}-{{.PageEnd}} of {{.Total}}</span>
+      <span>
+        {{if .HasPrevPage}}<a class="link" href="/ui/search?namespace={{.Namespace}}&workflow_type={{.WorkflowType}}&status={{.Status}}&field={{.Field}}&value={{.Value}}&page={{decr .Page}}">&larr; prev</a>{{end}}
+        {{if and .HasPrevPage .HasNextPage}} &middot; {{end}}
+        {{if .HasNextPage}}<a class="link" href="/ui/search?namespace={{.Namespace}}&workflow_type={{.WorkflowType}}&status={{.Status}}&field={{.Field}}&value={{.Value}}&page={{incr .Page}}">next &rarr;</a>{{end}}
+      </span>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</main>
+<script>
+  const presetNamespace = {{printf "%q" .Namespace}};
+  const presetWorkflowType = {{printf "%q" .WorkflowType}};
+  const presetField = {{printf "%q" .Field}};
+
+  // The API key is only ever accepted via URL query string on the FIRST page load (unavoidable
+  // for a plain navigation/bookmark - there's no way to attach a header to that). From then on
+  // it's kept in sessionStorage and sent as the X-API-Key header on every /api/* call, so it
+  // never appears in the URL of any subsequent request (and so never lands in per-request
+  // access/proxy logs). The one-time page-load URL is also scrubbed from the address bar.
+  (function stashApiKeyFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    const key = params.get('api_key');
+    if (!key) return;
+    sessionStorage.setItem('observer_api_key', key);
+    params.delete('api_key');
+    const rest = params.toString();
+    history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : ''));
+  })();
+
+  async function apiFetch(path, options) {
+    options = options || {};
+    const key = sessionStorage.getItem('observer_api_key');
+    if (key) {
+      options.headers = Object.assign({}, options.headers, { 'X-API-Key': key });
+    }
+    return fetch(path, options);
+  }
+
+  async function loadNamespaces() {
+    const res = await apiFetch('/api/namespaces');
+    const data = await res.json();
+    const sel = document.getElementById('namespaceSelect');
+    sel.innerHTML = '';
+    (data.results || []).forEach(ns => {
+      const opt = document.createElement('option');
+      opt.value = ns; opt.textContent = ns;
+      if (ns === presetNamespace) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    await loadWorkflowTypes();
+  }
+
+  async function loadWorkflowTypes() {
+    const ns = document.getElementById('namespaceSelect').value;
+    const res = await apiFetch('/api/workflow-types?namespace=' + encodeURIComponent(ns));
+    const data = await res.json();
+    const sel = document.getElementById('workflowTypeSelect');
+    sel.innerHTML = '<option value="">(any)</option>';
+    (data.results || []).forEach(wt => {
+      const opt = document.createElement('option');
+      opt.value = wt; opt.textContent = wt;
+      if (wt === presetWorkflowType) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    await loadFields();
+  }
+
+  async function loadFields() {
+    const ns = document.getElementById('namespaceSelect').value;
+    const wt = document.getElementById('workflowTypeSelect').value;
+    const res = await apiFetch('/api/allowlist?namespace=' + encodeURIComponent(ns));
+    const data = await res.json();
+    const names = new Set();
+    (data.results || []).forEach(e => {
+      if (e.workflow_type === '*' || e.workflow_type === wt || wt === '') names.add(e.field);
+    });
+    const sel = document.getElementById('fieldSelect');
+    sel.innerHTML = '<option value="">(any)</option>';
+    Array.from(names).sort().forEach(f => {
+      const opt = document.createElement('option');
+      opt.value = f; opt.textContent = f;
+      if (f === presetField) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function addField(force) {
+    const ns = document.getElementById('namespaceSelect').value;
+    const wt = document.getElementById('workflowTypeSelect').value || '*';
+    const field = document.getElementById('newFieldInput').value.trim();
+    const status = document.getElementById('addFieldStatus');
+    if (!ns || !field) { status.textContent = 'namespace and field name are required'; return; }
+    const res = await apiFetch('/api/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ namespace: ns, workflow_type: wt, field: field, force: !!force })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      status.textContent = 'added - applies to newly-closed workflows from now on';
+      document.getElementById('newFieldInput').value = '';
+      await loadFields();
+      return;
+    }
+    if (res.status === 400 && /sensitive pattern/.test(body.error || '') && !force) {
+      status.innerHTML = '';
+      status.appendChild(document.createTextNode((body.error || 'looks sensitive') + ' '));
+      const retry = document.createElement('button');
+      retry.className = 'secondary';
+      retry.textContent = 'add anyway';
+      retry.style.fontSize = '12px';
+      retry.addEventListener('click', () => addField(true));
+      status.appendChild(retry);
+      return;
+    }
+    status.textContent = body.error || 'failed to add field';
+  }
+
+  document.getElementById('addFieldBtn').addEventListener('click', () => addField(false));
+
+  document.getElementById('namespaceSelect').addEventListener('change', loadWorkflowTypes);
+  document.getElementById('workflowTypeSelect').addEventListener('change', loadFields);
+
+  loadNamespaces();
+</script>
+</body>
+</html>

@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
 	close_time         TIMESTAMPTZ,
 	duration_ms        BIGINT,
 	history_fetched_at TIMESTAMPTZ,
+	search_index       JSONB NOT NULL DEFAULT '{}'::jsonb,
 	updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE (namespace, workflow_id, run_id)
 );
@@ -35,6 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_executions_start_time ON workflow_execut
 CREATE INDEX IF NOT EXISTS idx_workflow_executions_pending_history
 	ON workflow_executions (namespace)
 	WHERE status <> 'Running' AND history_fetched_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workflow_executions_search_index ON workflow_executions USING GIN (search_index);
 
 CREATE TABLE IF NOT EXISTS activity_executions (
 	id               BIGSERIAL PRIMARY KEY,
@@ -62,6 +64,51 @@ CREATE TABLE IF NOT EXISTS collector_cursors (
 	closed_cursor   TIMESTAMPTZ NOT NULL,
 	updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Rolling duration baselines, computed periodically from historical data. activity_type is
+-- '' for a workflow-level baseline so it can share a table with activity-level baselines.
+CREATE TABLE IF NOT EXISTS duration_baselines (
+	namespace     TEXT NOT NULL,
+	workflow_type TEXT NOT NULL,
+	activity_type TEXT NOT NULL DEFAULT '',
+	sample_count  BIGINT NOT NULL,
+	p50_ms        BIGINT,
+	p95_ms        BIGINT,
+	computed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	PRIMARY KEY (namespace, workflow_type, activity_type)
+);
+
+-- Optional operator overrides. Any null column falls back to the computed baseline.
+CREATE TABLE IF NOT EXISTS thresholds (
+	namespace           TEXT NOT NULL,
+	workflow_type       TEXT NOT NULL,
+	activity_type       TEXT NOT NULL DEFAULT '',
+	max_duration_ms     BIGINT,
+	baseline_multiplier DOUBLE PRECISION,
+	updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	PRIMARY KEY (namespace, workflow_type, activity_type)
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+	id              BIGSERIAL PRIMARY KEY,
+	namespace       TEXT NOT NULL,
+	workflow_id     TEXT NOT NULL,
+	run_id          TEXT NOT NULL,
+	workflow_type   TEXT NOT NULL,
+	activity_type   TEXT NOT NULL DEFAULT '',
+	activity_id     TEXT NOT NULL DEFAULT '',
+	alert_type      TEXT NOT NULL,
+	severity        TEXT NOT NULL,
+	message         TEXT NOT NULL,
+	created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	resolved_at     TIMESTAMPTZ,
+	-- workflow_type is part of the identity so two workflow types can't collide on the same
+	-- namespace-wide aggregate alert; activity_id (not just activity_type) is part of it so
+	-- two distinct instances of the same activity type within one run (e.g. a per-document
+	-- fan-out) don't overwrite each other's alert.
+	UNIQUE (namespace, workflow_id, run_id, workflow_type, activity_type, activity_id, alert_type)
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (namespace, severity) WHERE resolved_at IS NULL;
 `
 
 func InitDB(databaseURL string) error {
@@ -75,6 +122,9 @@ func InitDB(databaseURL string) error {
 	defer cancel()
 	if _, err := pool.Exec(ctx, schema); err != nil {
 		return fmt.Errorf("error ensuring schema exists: %w", err)
+	}
+	if _, err := pool.Exec(ctx, allowlistSchema); err != nil {
+		return fmt.Errorf("error ensuring allowlist schema exists: %w", err)
 	}
 
 	log.Println("TemporalObserver database schema ready")
@@ -128,13 +178,19 @@ func GetRunningExecutions(ctx context.Context, namespace string, limit int) ([]m
 	return scanWorkflowExecutions(rows)
 }
 
-// GetPendingHistoryFetch returns closed executions whose activity history we haven't pulled yet.
+// GetPendingHistoryFetch returns closed executions whose activity history we haven't pulled yet,
+// newest-closed first. On first run against a namespace with a large historical backlog (e.g.
+// thousands of already-closed workflows from before the collector existed), processing
+// oldest-first would mean a workflow that just failed sits behind months of backlog before its
+// activities/failure reason become visible - exactly when an operator most wants to see it.
+// Newest-first means recent activity surfaces quickly while the backlog still drains in the
+// background at the same overall throughput, just in a different order.
 func GetPendingHistoryFetch(ctx context.Context, namespace string, limit int) ([]models.WorkflowExecution, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT id, namespace, workflow_id, run_id, workflow_type, task_queue, status, start_time, close_time, duration_ms
 		FROM workflow_executions
 		WHERE namespace = $1 AND status <> 'Running' AND history_fetched_at IS NULL
-		ORDER BY close_time ASC NULLS LAST
+		ORDER BY close_time DESC NULLS LAST
 		LIMIT $2
 	`, namespace, limit)
 	if err != nil {

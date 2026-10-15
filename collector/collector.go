@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	observerclient "TemporalObserver/client"
 	"TemporalObserver/config"
 	"TemporalObserver/db"
 	"TemporalObserver/models"
@@ -21,27 +22,30 @@ import (
 
 const pageSize = int32(100)
 
-// Run drives the polling loop for every configured namespace. It only ever calls Temporal's
-// read-only visibility/history APIs - nothing here can start, signal, or cancel a workflow.
-func Run(ctx context.Context, cfg config.Config, clients map[string]client.Client) {
+// Run drives the polling loop. The registry's current namespace set is re-read every tick (not
+// just once at startup), so a namespace discovered after this loop started is picked up
+// automatically - nothing about which namespaces exist is fixed at startup. It only ever calls
+// Temporal's read-only visibility/history APIs - nothing here can start, signal, or cancel a
+// workflow.
+func Run(ctx context.Context, cfg config.Config, registry *observerclient.Registry) {
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
 
 	// Run one pass immediately on startup instead of waiting for the first tick.
-	pollAll(ctx, cfg, clients)
+	pollAll(ctx, cfg, registry)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pollAll(ctx, cfg, clients)
+			pollAll(ctx, cfg, registry)
 		}
 	}
 }
 
-func pollAll(ctx context.Context, cfg config.Config, clients map[string]client.Client) {
-	for ns, c := range clients {
+func pollAll(ctx context.Context, cfg config.Config, registry *observerclient.Registry) {
+	for ns, c := range registry.Snapshot() {
 		if err := pollNamespace(ctx, cfg, ns, c); err != nil {
 			log.Printf("[collector] namespace %q poll failed: %v", ns, err)
 			sentry.CaptureException(err)
@@ -160,7 +164,10 @@ func upsertClosedExecution(ctx context.Context, ns string, exec *workflowpb.Work
 		durationMs := closeTime.Sub(w.StartTime).Milliseconds()
 		w.DurationMs = &durationMs
 	}
-	return db.UpsertWorkflowExecution(ctx, w)
+	if err := db.UpsertWorkflowExecution(ctx, w); err != nil {
+		return err
+	}
+	return db.ResolveAlertsForExecution(ctx, ns, w.WorkflowID, w.RunID)
 }
 
 // reconcileRunning re-checks rows we still believe are "Running" directly via
@@ -191,14 +198,21 @@ func reconcileRunning(ctx context.Context, cfg config.Config, c client.Client, n
 			Status:       statusName(info.GetStatus()),
 			StartTime:    w.StartTime,
 		}
+		closed := false
 		if ct := info.GetCloseTime(); ct != nil {
 			closeTime := ct.AsTime()
 			updated.CloseTime = &closeTime
 			durationMs := closeTime.Sub(w.StartTime).Milliseconds()
 			updated.DurationMs = &durationMs
+			closed = updated.Status != "Running"
 		}
 		if err := db.UpsertWorkflowExecution(ctx, updated); err != nil {
 			return err
+		}
+		if closed {
+			if err := db.ResolveAlertsForExecution(ctx, ns, w.WorkflowID, w.RunID); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -212,7 +226,11 @@ func fetchPendingHistories(ctx context.Context, cfg config.Config, c client.Clie
 		return err
 	}
 	for _, w := range pending {
-		if err := extractActivities(ctx, c, ns, w.WorkflowID, w.RunID); err != nil {
+		allow, err := db.GetAllowlistFields(ctx, ns, w.WorkflowType)
+		if err != nil {
+			return err
+		}
+		if err := extractHistory(ctx, c, ns, w.WorkflowID, w.RunID, allow); err != nil {
 			log.Printf("[collector] history fetch %s/%s failed: %v", w.WorkflowID, w.RunID, err)
 			sentry.CaptureException(err)
 			continue
@@ -236,8 +254,14 @@ type activityAttempt struct {
 	failureMessage string
 }
 
-func extractActivities(ctx context.Context, c client.Client, ns, workflowID, runID string) error {
+// extractHistory pulls a closed workflow's history exactly once, extracting both its
+// per-activity attempts (for activity_executions) and, from the single
+// WorkflowExecutionStarted event, the allowlisted input fields (for search_index). Everything
+// else in the input payload is discarded in-memory and never reaches any log line, table, or
+// error message.
+func extractHistory(ctx context.Context, c client.Client, ns, workflowID, runID string, allow db.AllowlistSet) error {
 	byScheduledID := map[int64]*activityAttempt{}
+	searchFields := map[string]string{}
 
 	iter := c.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 	for iter.HasNext() {
@@ -246,6 +270,16 @@ func extractActivities(ctx context.Context, c client.Client, ns, workflowID, run
 			return err
 		}
 		applyHistoryEvent(byScheduledID, event)
+		if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED {
+			attrs := event.GetWorkflowExecutionStartedEventAttributes()
+			for k, v := range extractAllowlistedFields(attrs.GetInput(), allow) {
+				searchFields[k] = v
+			}
+		}
+	}
+
+	if err := db.UpsertSearchIndex(ctx, ns, workflowID, runID, searchFields); err != nil {
+		return err
 	}
 
 	for _, a := range byScheduledID {

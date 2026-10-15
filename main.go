@@ -14,11 +14,20 @@ import (
 	"TemporalObserver/collector"
 	"TemporalObserver/config"
 	"TemporalObserver/db"
+	"TemporalObserver/metrics"
 	"TemporalObserver/routes"
 )
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
+	if cfg.MonitorAllNamespaces {
+		log.Println("[config] OBSERVER_NAMESPACES=* - monitoring EVERY namespace on the cluster, including any other teams'")
+	} else {
+		log.Printf("[config] monitoring namespace allowlist: %v", cfg.Namespaces)
+	}
 
 	if cfg.SentryDSN != "" {
 		if err := sentry.Init(sentry.ClientOptions{
@@ -35,17 +44,22 @@ func main() {
 	}
 	defer db.CloseDB()
 
-	clients, err := client.NewClients(cfg.TemporalHostPort, cfg.Namespaces)
-	if err != nil {
-		log.Fatalf("client.NewClients: %v", err)
-	}
-	defer client.CloseAll(clients)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go collector.Run(ctx, cfg, clients)
 
-	router := routes.SetupRouter()
+	registry, err := client.NewRegistry(ctx, cfg.TemporalHostPort, cfg.Namespaces)
+	if err != nil {
+		log.Fatalf("client.NewRegistry: %v", err)
+	}
+	defer registry.CloseAll()
+	go registry.RunAutoDiscovery(ctx, cfg.NamespaceDiscoveryInterval)
+
+	go collector.Run(ctx, cfg, registry)
+	go collector.RunBaselineLoop(ctx, cfg)
+	go collector.RunAlertLoop(ctx, cfg, registry)
+	go metrics.RefreshLoop(ctx, cfg.AlertInterval)
+
+	router := routes.SetupRouter(cfg, registry)
 	if cfg.SentryDSN != "" {
 		router.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
 	}
